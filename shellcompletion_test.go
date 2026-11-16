@@ -142,6 +142,117 @@ func completionExecutable(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+func TestCompletionOrder(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"root_test.go":    "package example\nimport \"testing\"\nfunc TestAlpha(t *testing.T) {}\nfunc FuzzSample(f *testing.F) {}\nfunc Example() {\n// Output:\n}\n",
+		"sub/sub_test.go": "package sub\nimport \"testing\"\nfunc TestSub(t *testing.T) {}\n",
+	})
+	want := []string{"./...", "example.com/project", "example.com/project/sub", "Example", "FuzzSample", "TestAlpha", "TestSub"}
+	var output bytes.Buffer
+	if err := completeShell(context.Background(), &output, []string{"gopick", "-C", dir, ""}, 3); err != nil {
+		t.Fatal(err)
+	}
+	if expected := "arguments\n" + strings.Join(want, "\n") + "\n"; output.String() != expected {
+		t.Fatalf("backend completion = %q, want %q", &output, expected)
+	}
+	completionExecutable(t)
+	t.Run("fish", func(t *testing.T) {
+		fish, err := exec.LookPath("fish")
+		if err != nil {
+			t.Skip("fish is not installed")
+		}
+		for _, legacy := range []string{"", "complete -c gopick -n __gopick_command_context -f -a '(__gopick_candidates)'\n"} {
+			cmd := exec.Command(fish, "--no-config", "-c", legacy+fishCompletion+fishCompletion+"\ncomplete -C 'gopick '\n")
+			cmd.Dir = dir
+			output, err := cmd.CombinedOutput()
+			if expected := strings.Join(want, "\n") + "\n"; err != nil || string(output) != expected {
+				t.Fatalf("completion (legacy=%v) = %q, %v; want %q", legacy != "", output, err, expected)
+			}
+		}
+	})
+	seen := make(map[string]bool)
+	for _, name := range []string{"zsh", "bash", "/bin/bash"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			continue
+		}
+		path, err = filepath.EvalSymlinks(path)
+		if err != nil || seen[path] {
+			continue
+		}
+		seen[path] = true
+		t.Run(name, func(t *testing.T) {
+			python, err := exec.LookPath("python3")
+			if err != nil {
+				t.Skip("python3 is needed for the interactive PTY test")
+			}
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			script := bashCompletion + "\nbind '\"\\t\": menu-complete'\n"
+			if name == "zsh" {
+				script = "autoload -Uz compinit\ncompinit -D -i\n" + zshCompletion + "\nbindkey '^I' menu-complete\n"
+			}
+			script += `
+gopick() {
+  if [[ $1 == -complete ]]; then
+    command gopick "$@"
+  else
+    printf '%s\0' "$@" > "$GOPICK_CAPTURE"
+  fi
+}
+PS1='GOPICK_READY> '
+`
+			if err := os.WriteFile(rc, []byte(script), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(python, append([]string{"-c", `
+import os, pathlib, pty, select, signal, subprocess, sys, time
+shell, root, rc = sys.argv[1:4]
+want = sys.argv[4:]
+capture = pathlib.Path(rc).parent / 'captured'
+env = dict(os.environ, INPUTRC='/dev/null', TERM='xterm-256color', LC_ALL='C',
+           GOPICK_CAPTURE=str(capture), ZDOTDIR=str(pathlib.Path(rc).parent))
+if pathlib.Path(shell).name == 'zsh':
+    args = [shell, '-d', '-i']
+else:
+    args = [shell, '--noprofile', '--rcfile', rc, '-i']
+    probe = subprocess.run([shell, '-c', 'complete -o nosort -W x _probe'], capture_output=True)
+    if probe.returncode:
+        want.sort()  # Older Bash has no option to preserve completion order.
+child, master = pty.fork()
+if child == 0:
+    os.chdir(root)
+    os.execve(shell, args, env)
+def until(done):
+    output = b''
+    end = time.monotonic() + 10
+    while time.monotonic() < end:
+        if select.select([master], [], [], .05)[0]:
+            output += os.read(master, 65536)
+        if done(output):
+            return
+    raise AssertionError('interactive completion timed out: ' + repr(output))
+try:
+    until(lambda output: b'GOPICK_READY>' in output)
+    for i, expected in enumerate(want, 1):
+        capture.unlink(missing_ok=True)
+        os.write(master, ('gopick ' + '\t' * i + '\r').encode())
+        until(lambda output: capture.exists() and b'GOPICK_READY>' in output)
+        actual = capture.read_bytes().decode().split('\0')[:-1]
+        if actual != [expected]:
+            raise AssertionError(f'candidate {i}: got {actual!r}, want {expected!r}')
+finally:
+    os.kill(child, signal.SIGKILL)
+    # Closing the PTY releases a shell that may still be flushing terminal I/O.
+    os.close(master)
+    os.waitpid(child, 0)
+`, path, dir, rc}, want...)...)
+			if output, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("interactive completion order: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
 func TestBashCompletion(t *testing.T) {
 	bash, err := exec.LookPath("bash")
 	if err != nil {

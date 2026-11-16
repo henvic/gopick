@@ -119,7 +119,8 @@ _gopick() {
       # prefixes instead of sending incomplete expressions to the backend.
       args+=(-- "${scope[@]}")
       candidates=("${(@f)$(gopick "${args[@]}" 2>/dev/null)}")
-      (( ${#candidates} )) && compadd -a candidates
+      # Preserve the backend's package-first order within this group.
+      (( ${#candidates} )) && compadd -V gopick -a candidates
       ;;
   esac
 }

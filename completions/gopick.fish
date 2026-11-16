@@ -64,11 +64,16 @@ if not string match -q '*__gopick_go_context*' -- (complete -c go)
 end
 
 if not string match -q '*__gopick_command_context*' -- (complete -c gopick)
-    complete -c gopick -n __gopick_command_context -f -a '(__gopick_candidates)'
     for option in C tags format completion completion-target
         complete -c gopick -n __gopick_command_context -o $option -l $option -x -a '(__gopick_candidates)'
     end
     for option in list cmd format-fields help
         complete -c gopick -n __gopick_command_context -o $option -l $option
     end
+end
+
+# Keep package scopes ahead of test names, including when re-sourcing over an
+# older registration. Fish removes duplicate candidates from the older rule.
+if not string match -q '* -k *__gopick_command_context*' -- (complete -c gopick)
+    complete -c gopick -n __gopick_command_context -k -f -a '(__gopick_candidates)'
 end

@@ -86,6 +86,9 @@ _gopick_complete() {
   if [[ $kind != fallback ]]; then
     # Don't add filenames when a test regexp has no matching candidates.
     type compopt &>/dev/null && compopt +o default +o bashdefault 2>/dev/null
+    # Preserve the backend's package-first order when Bash supports it.
+    # Bash 3.2 still completes normally, using Readline's native sorting.
+    compopt -o nosort 2>/dev/null || :
     for (( i=1; i < ${#results[@]}; i++ )); do
       current=${results[i]#"$strip"}
       # Readline adds slashes outside its quotes when it can stat the full

@@ -28,8 +28,8 @@ func TestCompletion(t *testing.T) {
 		{[]string{"-complete", "tests", "-tags", "special", "Tagged"}, "TestTagged\n"},
 		{[]string{"-complete", "tests", "absent"}, ""},
 		{[]string{"-complete", "tests", "^TestAlpha$/child"}, "TestAlpha\n"},
-		{[]string{"-complete", "packages"}, ".\n./...\n./sub\nexample.com/project\nexample.com/project/sub\n"},
-		{[]string{"-complete", "arguments"}, ".\n./...\n./sub\nTestAlpha\nTestExternal\nTestSubOnly\nTestZebra\nexample.com/project\nexample.com/project/sub\n"},
+		{[]string{"-complete", "packages"}, "./...\nexample.com/project\nexample.com/project/sub\n"},
+		{[]string{"-complete", "arguments"}, "./...\nexample.com/project\nexample.com/project/sub\nTestAlpha\nTestExternal\nTestSubOnly\nTestZebra\n"},
 		{[]string{"-complete", "go-tests"}, "TestAlpha\nTestExternal\nTestZebra\n"},
 		{[]string{"-complete", "go-tests", "./sub"}, "TestAlpha\nTestSubOnly\n"},
 		{[]string{"-complete", "go-tests", ".", "./sub"}, "TestAlpha\nTestExternal\nTestSubOnly\nTestZebra\n"},
@@ -291,22 +291,35 @@ func TestCompletionPackagePaths(t *testing.T) {
 		if err := run(context.Background(), []string{"-C", dir, "-complete", kind}, nil, &stdout, &stderr); err != nil {
 			t.Fatal(err)
 		}
-		want := ".\n./...\n./sub\nfoo/sub\n"
+		want := ".\n./...\n./sub\n"
 		if kind == "arguments" {
-			want = ".\n./...\n./sub\nTestModule\nTestSub\nfoo/sub\n"
+			want = ".\n./...\n./sub\nTestModule\nTestSub\n"
 		}
 		if stdout.String() != want {
 			t.Errorf("%s completion = %q, want %q", kind, &stdout, want)
 		}
 		if kind == "packages" {
 			for _, path := range strings.Fields(stdout.String()) {
-				var command bytes.Buffer
-				if err := run(context.Background(), []string{"-C", dir, "-cmd", path, "Test"}, nil, &command, &stderr); err != nil {
-					t.Errorf("advertised package %q cannot be selected: %v", path, err)
+				for _, args := range [][]string{{path}, {"-cmd", path, "Test"}} {
+					var output bytes.Buffer
+					if err := run(context.Background(), append([]string{"-C", dir}, args...), nil, &output, &stderr); err != nil {
+						t.Errorf("advertised package %q cannot be selected with %q: %v", path, args, err)
+					}
 				}
 			}
 		}
 	}
+	t.Run("local packages", func(t *testing.T) {
+		t.Setenv("GO111MODULE", "off")
+		t.Setenv("GOPATH", t.TempDir())
+		var stdout, stderr bytes.Buffer
+		if err := run(context.Background(), []string{"-C", dir, "-complete", "arguments"}, nil, &stdout, &stderr); err != nil {
+			t.Fatal(err)
+		}
+		if want := ".\n./...\n./sub\nTestModule\nTestSub\n"; stdout.String() != want {
+			t.Errorf("local completion = %q, want %q", &stdout, want)
+		}
+	})
 }
 
 func TestZshGoCompletion(t *testing.T) {

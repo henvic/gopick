@@ -173,8 +173,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return err
 	}
 	fmt.Fprintln(stderr, selected.shellCommand(cwd))
-	command := selected.Command
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	// #nosec G204 -- This CLI intentionally forwards user-supplied go test arguments without a shell.
+	cmd := exec.CommandContext(ctx, "go", selected.Command[1:]...)
 	cmd.Dir = selected.Dir
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
 	return cmd.Run()
@@ -383,6 +383,7 @@ func discover(ctx context.Context, dir string, patterns []string, tags *string, 
 			fset := token.NewFileSet()
 			var source any
 			if backing, ok := overlay[filename]; ok {
+				// #nosec G304 -- Go overlays intentionally allow user-selected files outside the package.
 				contents, err := os.ReadFile(backing)
 				if err != nil {
 					return nil, fmt.Errorf("read overlaid test %s: %w", filename, err)
