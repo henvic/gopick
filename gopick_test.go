@@ -104,6 +104,95 @@ func BenchmarkAlpha(b *testing.B) {}
 	}
 }
 
+func TestProjectDiscovery(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"example_test.go":          "package example\nimport \"testing\"\nfunc TestProject(t *testing.T) {}\n",
+		"sub/sub_test.go":          "package sub\nimport \"testing\"\nfunc TestSub(t *testing.T) {}\n",
+		"broken/go.mod":            "not a valid module file\n",
+		"work/go.work":             "go 1.22\nuse ./member\n",
+		"work/member/go.mod":       "module example.com/member\n\ngo 1.22\n",
+		"work/member/main_test.go": "package member\nimport \"testing\"\nfunc TestMember(t *testing.T) {}\n",
+	})
+	t.Setenv("GO111MODULE", "on")
+	outside := t.TempDir()
+	for name, content := range map[string]string{
+		"broken_test.go":     "package\n",
+		"standalone_test.go": "package standalone\nimport \"testing\"\nfunc TestStandalone(t *testing.T) {}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(outside, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const missing = "no Go module found in this directory or its parents"
+	for _, tc := range []struct {
+		name, dir string
+		args      []string
+		want      string
+	}{
+		{"no arguments", outside, nil, missing},
+		{"selector", outside, []string{"TestProject"}, missing},
+		{"current package", outside, []string{"."}, missing},
+		{"other package pattern", outside, []string{"./sub/..."}, missing},
+		{"directory flag", dir, []string{"-C", outside}, missing},
+		{"invalid module", dir, []string{"-C", filepath.Join(dir, "broken")}, "errors parsing go.mod"},
+		{"missing package", dir, []string{"./missing"}, "directory not found"},
+		{"invalid build flag", outside, []string{"TestProject", "-mod=invalid"}, "-mod=invalid"},
+		{"missing overlay", outside, []string{"TestProject", "-overlay=missing.json"}, "missing.json"},
+		{"missing module override", outside, []string{"TestProject", "-modfile=missing.mod"}, "-modfile"},
+		{"invalid named file", outside, []string{"./broken_test.go"}, "broken_test.go:1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(tc.dir)
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), tc.args, nil, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run() = %v, want %q", err, tc.want)
+			}
+			if tc.want == missing {
+				if err.Error() != missing {
+					t.Errorf("error = %q, want %q", err, missing)
+				}
+			} else if !strings.HasPrefix(err.Error(), "discover packages:") {
+				t.Errorf("lost discovery diagnostic: %v", err)
+			}
+			if stdout.Len() != 0 || stderr.Len() != 0 {
+				t.Errorf("unexpected output: stdout %q, stderr %q", &stdout, &stderr)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, dir, work, mode string
+		args                  []string
+		want                  string
+	}{
+		{"module subdirectory", filepath.Join(dir, "sub"), "off", "on", nil, "TestSub"},
+		{"select project", outside, "off", "on", []string{"-C", dir}, "TestProject"},
+		{"workspace", filepath.Join(dir, "work"), filepath.Join(dir, "work", "go.work"), "on", []string{"./member/..."}, "TestMember"},
+		{"GOPATH", filepath.Join(dir, "sub"), "off", "off", nil, "TestSub"},
+		{"standalone file", outside, "off", "on", []string{"./standalone_test.go"}, "TestStandalone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(tc.dir)
+			t.Setenv("GOWORK", tc.work)
+			t.Setenv("GO111MODULE", tc.mode)
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), tc.args, nil, &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Errorf("stdout = %q, want %q", &stdout, tc.want)
+			}
+		})
+	}
+	t.Run("workspace diagnostic", func(t *testing.T) {
+		t.Setenv("GOWORK", filepath.Join(dir, "work", "go.work"))
+		_, err := discover(context.Background(), filepath.Join(dir, "work"), []string{"./..."}, nil)
+		if err == nil || !strings.Contains(err.Error(), "modules listed in go.work") {
+			t.Fatalf("lost workspace diagnostic: %v", err)
+		}
+	})
+}
+
 func TestDiscoveryLineDirectives(t *testing.T) {
 	dir := fixture(t, map[string]string{
 		"physical_test.go": `package example

@@ -368,18 +368,24 @@ func (t test) packageArgs() []string {
 // go list -find respects build constraints without resolving dependencies.
 // Reading the selected test files avoids building a test binary for discovery.
 func discover(ctx context.Context, dir string, patterns []string, tags *string, build ...string) ([]test, error) {
-	args := []string{"list", "-find", "-json=Dir,ImportPath,Match,TestGoFiles,XTestGoFiles"}
 	if tags != nil {
-		args = append(args, "-tags", *tags)
+		build = append([]string{"-tags", *tags}, build...)
 	}
-	args = append(args, build...)
+	args := append([]string{"list", "-find", "-json=Dir,ImportPath,Match,TestGoFiles,XTestGoFiles"}, build...)
 	args = append(args, patterns...)
+	// #nosec G204 -- This CLI intentionally passes user-selected packages and build flags to go list without a shell.
 	cmd := exec.CommandContext(ctx, "go", args...)
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	output, err := cmd.Output()
 	if err != nil {
+		// Named files work without a module; preserve their own diagnostics.
+		files := len(patterns) > 0 && strings.HasSuffix(patterns[0], ".go")
+		var exit *exec.ExitError
+		if !files && len(output) == 0 && errors.As(err, &exit) && missingModule(ctx, dir, build) {
+			return nil, errors.New("no Go module found in this directory or its parents")
+		}
 		return nil, fmt.Errorf("discover packages: %w\n%s", err, strings.TrimSpace(stderr.String()))
 	}
 	overlay, err := readOverlay(ctx, dir, args[1:])
@@ -460,6 +466,28 @@ func discover(ctx context.Context, dir string, patterns []string, tags *string, 
 		return tests[i].Name < tests[j].Name
 	})
 	return tests, nil
+}
+
+// Outside a module, Go reports a synthetic main module with no directory or
+// go.mod. Ask Go only after discovery fails, using the same build settings so
+// invalid flags, overlays, and module files keep their original diagnostics.
+func missingModule(ctx context.Context, dir string, build []string) bool {
+	args := append([]string{"list", "-m", "-json"}, build...)
+	// #nosec G204 -- This CLI intentionally passes user-selected build flags to go list without a shell.
+	cmd := exec.CommandContext(ctx, "go", args...)
+	cmd.Dir = dir
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	var module struct {
+		Main       bool
+		Dir, GoMod string
+	}
+	if err := json.NewDecoder(bytes.NewReader(output)).Decode(&module); err != nil {
+		return false
+	}
+	return module.Main && module.Dir == "" && module.GoMod == ""
 }
 
 // Match the test and fuzz signatures used by go test, including aliased and
