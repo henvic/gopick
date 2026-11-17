@@ -48,7 +48,7 @@ _gopick_complete() {
   local command=$1
   shift
   local i word index=-1 cursor=0 line kind strip='' current saved REPLY breakprefix
-  local remaining=$COMP_LINE gap
+  local remaining=$COMP_LINE gap raw
   local -a words=() results=() spec=()
   COMPREPLY=()
 
@@ -72,6 +72,7 @@ _gopick_complete() {
     fi
     (( i == COMP_CWORD )) && cursor=$index
   done
+  raw=${words[cursor]}
   for (( i=0; i < ${#words[@]}; i++ )); do
     _gopick_unquote "${words[i]}"
     words[i]=$REPLY
@@ -83,6 +84,35 @@ _gopick_complete() {
     results[${#results[@]}]=$line
   done < <(gopick -complete shell -cursor "$cursor" -- "${words[@]}" 2>/dev/null)
   kind=${results[0]:-fallback}
+  if [[ $kind == files ]]; then
+    # File values belong to Readline, not a previously registered completer.
+    # Generate candidates explicitly: the previous registration may not have
+    # enabled filename fallback, and Bash 3.2 has no compopt to enable it here.
+    current=${words[cursor]}
+    word=''
+    if [[ $current == -*=* ]]; then
+      word=${current%%=*}=
+      current=${current#*=}
+      if [[ $raw == "$word"* ]]; then
+        # Bash does not expand ~ after a flag's '=' when executing it. Insert
+        # the expanded path, but only when the value's tilde was unquoted.
+        _gopick_unquote "${raw#"$word"}"
+        current=$REPLY
+      fi
+    fi
+    # compgen and Readline can expand even a quoted tilde. A literal relative
+    # path needs ./ to survive both candidate generation and insertion.
+    [[ $current == '~'* ]] && current=./$current
+    while IFS= read -r line; do
+      if [[ -d $line && -n $strip && $strip != "$word" ]]; then
+        line+=/
+      fi
+      line=$word$line
+      COMPREPLY[${#COMPREPLY[@]}]=${line#"$strip"}
+    done < <(compgen -f -- "$current")
+    compopt -o filenames 2>/dev/null || compgen -f /dev/null/ >/dev/null
+    return 0
+  fi
   if [[ $kind != fallback ]]; then
     # Don't add filenames when a test regexp has no matching candidates.
     type compopt &>/dev/null && compopt +o default +o bashdefault 2>/dev/null

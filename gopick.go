@@ -61,7 +61,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	list := flags.Bool("list", false, "list matching tests without running them")
 	printCommand := flags.Bool("cmd", false, "print the selected go test command without running it")
 	completion := flags.String("completion", "", "print a shell completion script (zsh, bash, or fish)")
-	completionTarget := flags.String("completion-target", "both", "enable completion for go, gopick, or both (with -completion)")
+	install := flags.String("install-completion", "", "install shell completion after confirmation (zsh, bash, or fish)")
+	completionFile := flags.String("completion-file", "", "override the startup file for -install-completion zsh or bash")
+	yes := flags.Bool("yes", false, "approve -install-completion without prompting")
+	completionTarget := flags.String("completion-target", "both", "enable completion for go, gopick, or both")
 	complete := flags.String("complete", "", "print completion candidates (tests, packages, arguments, go-tests, or shell)")
 	cursor := flags.Int("cursor", -1, "current word index for -complete shell")
 	flags.Usage = func() {
@@ -78,6 +81,32 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		return err
 	}
+	var installSet, installOptions, completionFileSet bool
+	flags.Visit(func(f *flag.Flag) {
+		installSet = installSet || f.Name == "install-completion"
+		installOptions = installOptions || f.Name == "completion-file" || f.Name == "yes"
+		completionFileSet = completionFileSet || f.Name == "completion-file"
+	})
+	if completionFileSet && *completionFile == "" {
+		return errors.New("-completion-file must not be empty")
+	}
+	if installSet {
+		var conflict string
+		flags.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "install-completion", "completion-target", "completion-file", "yes":
+			default:
+				conflict = f.Name
+			}
+		})
+		if conflict != "" || flags.NArg() != 0 {
+			return errors.New("-install-completion only accepts -completion-target, -completion-file, and -yes")
+		}
+		return installCompletion(ctx, stdin, stdout, stderr, *install, *completionTarget, *completionFile, *yes)
+	}
+	if installOptions {
+		return errors.New("-completion-file and -yes require -install-completion")
+	}
 	if *fields {
 		return printFormatFields(stdout)
 	}
@@ -90,7 +119,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		formatSet = formatSet || f.Name == "format"
 	})
 	if completionTargetSet {
-		return errors.New("-completion-target requires -completion")
+		return errors.New("-completion-target requires -completion or -install-completion")
 	}
 	if formatSet && (*printCommand || *complete != "") {
 		return errors.New("-format cannot be used with -cmd or -complete")

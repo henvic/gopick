@@ -224,6 +224,12 @@ func TestZshForwardedCompletion(t *testing.T) {
 		{"gopick example.com/project -v", "4\ngo\ntest\nexample.com/project\n-v\n"},
 		{"gopick 'Test.*/child' -v", "4\ngo\ntest\n./...\n-v\n"},
 		{"gopick '.*/child' -v", "4\ngo\ntest\n./...\n-v\n"},
+		{"gopick -install-completion zsh extra -r", ""},
+		{"gopick --install-completion=zsh extra -- -r", ""},
+		{"gopick -completion-file config extra -r", ""},
+		{"gopick --completion-file=config extra -r", ""},
+		{"gopick -yes extra -r", ""},
+		{"gopick --yes=false extra -r", ""},
 	} {
 		cmd := exec.Command(zsh, "-f", "-c", `
 compdef() { :; }
@@ -482,6 +488,7 @@ print -rl -- "${selected[@]}"
 	})
 
 	t.Run("preserve existing completion on reload", func(t *testing.T) {
+		completionHome(t)
 		cmd := exec.Command(zsh, "-f", "-c", `
 autoload -Uz compinit
 compinit -D -i

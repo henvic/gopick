@@ -1,5 +1,9 @@
-# Enable zsh completion first: autoload -Uz compinit && compinit
 # Load with: source <(gopick -completion zsh)
+
+# Reuse the user's completion system, initializing it only when needed.
+if ! (( $+functions[compdef] )); then
+  autoload -Uz compinit && compinit || return $?
+fi
 
 # Completion words retain quoting and unexpanded tilde prefixes. Expand only
 # unquoted home/current/previous-directory shortcuts, without evaluating input.
@@ -35,7 +39,7 @@ _gopick() {
   # original words local so completion does not change the command line.
   local -a words=("${words[@]}")
   local CURRENT=$CURRENT
-  integer i firstpos=0 positional=0 options=1
+  integer i firstpos=0 positional=0 options=1 installing=0
   scope=(./...)
   for (( i=2; i <= CURRENT; i++ )); do
     value=${(Q)words[i]}
@@ -45,12 +49,18 @@ _gopick() {
         -C=*|--C=*) directory=("${words[i]}"); continue ;;
         -tags|--tags) tags=(-tags "${words[i+1]}"); (( i++ )); continue ;;
         -tags=*|--tags=*) tags=("${words[i]}"); continue ;;
+        -install-completion|--install-completion|-completion-file|--completion-file)
+          installing=1; (( i++ )); continue ;;
+        -install-completion=*|--install-completion=*|-completion-file=*|--completion-file=*|-yes|--yes|-yes=*|--yes=*)
+          installing=1; continue ;;
         -format|--format|-completion|--completion|-completion-target|--completion-target|-complete|--complete)
           (( i++ )); continue ;;
         --) options=0; continue ;;
         -*) continue ;;
       esac
     fi
+    # Installation accepts no positional arguments or forwarded Go flags.
+    (( installing )) && return
     if (( positional )) && [[ $value == -* && $value != - ]]; then
       [[ $value == -- ]] && (( i++ ))
       (( i > CURRENT )) && return
@@ -75,15 +85,22 @@ _gopick() {
     (( positional++ ))
   done
 
+  # _arguments exclusions apply when the option owning the list is present.
+  # Exclude the other mode in both directions, keeping shared flags available.
+  local installflags='-install-completion --install-completion -completion-file --completion-file -yes --yes'
+  local searchflags='-C --C -tags --tags -list --list -cmd --cmd -format --format -format-fields --format-fields -completion --completion'
   _arguments -0 -S -C -A '-*' \
-    '(-C --C)'{-C,--C}'=[search from this directory]:directory:_directories' \
-    '(-tags --tags)'{-tags,--tags}'=[Go build tags]:build tags:' \
-    '(-cmd --cmd -list --list)'{-list,--list}'[list matching tests without running them]' \
-    '(-list --list -format --format -cmd --cmd)'{-cmd,--cmd}'[print the command without running it]' \
-    '(-cmd --cmd -format --format)'{-format,--format}'=[customize output]:Go template:(table json)' \
-    '(-format-fields --format-fields)'{-format-fields,--format-fields}'[print template field names, types, and descriptions as JSON Lines]' \
-    '(-completion --completion)'{-completion,--completion}'=[print a completion script]:shell:(zsh bash fish)' \
+    "($installflags -C --C)"{-C,--C}'=[search from this directory]:directory:_directories' \
+    "($installflags -tags --tags)"{-tags,--tags}'=[Go build tags]:build tags:' \
+    "($installflags -cmd --cmd -list --list)"{-list,--list}'[list matching tests without running them]' \
+    "($installflags -list --list -format --format -cmd --cmd)"{-cmd,--cmd}'[print the command without running it]' \
+    "($installflags -cmd --cmd -format --format)"{-format,--format}'=[customize output]:Go template:(table json)' \
+    "($installflags -format-fields --format-fields)"{-format-fields,--format-fields}'[print template field names, types, and descriptions as JSON Lines]' \
+    "($installflags -completion --completion)"{-completion,--completion}'=[print a completion script]:shell:(zsh bash fish)' \
     '(-completion-target --completion-target)'{-completion-target,--completion-target}'=[choose completion target]:target:(go gopick both)' \
+    "($searchflags * -install-completion --install-completion)"{-install-completion,--install-completion}'=[install shell completion]:shell:(zsh bash fish)' \
+    "($searchflags * -completion-file --completion-file)"{-completion-file,--completion-file}'=[override startup file]:file:_files' \
+    "($searchflags * -yes --yes)"{-yes,--yes}'[approve completion installation without prompting]' \
     '(-h --h -help --help)'{-h,--h,-help,--help}'[show help]' \
     '*:package path or test regexp:->arguments'
 
@@ -92,6 +109,7 @@ _gopick() {
 
   case "$state" in
     arguments)
+      (( ${+opt_args[-install-completion]} || ${+opt_args[--install-completion]} )) && return
       (( ${#line} > 2 )) && return
       kind=arguments
       scope=()

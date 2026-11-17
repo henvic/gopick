@@ -44,7 +44,7 @@ func completeShell(ctx context.Context, w io.Writer, words []string, cursor int)
 	if _, err := fmt.Fprintln(w, kind); err != nil {
 		return err
 	}
-	if kind == "fallback" || kind == "none" {
+	if kind == "fallback" || kind == "none" || kind == "files" {
 		return nil
 	}
 	values := request.values
@@ -206,19 +206,32 @@ func gopickCompletionRequest(words []string, cursor int) completionRequest {
 	r := completionRequest{kind: "arguments", prefix: words[cursor]}
 	var positional []string
 	options := true
+	var installing, searching, installSet bool
 	for i := 1; i <= cursor; i++ {
 		word := words[i]
 		name, value, equals := completionFlag(word)
 		if len(positional) > 0 && name != "" {
 			return completionRequest{}
 		}
-		if options && len(positional) == 0 && word == "--" {
+		if options && len(positional) == 0 && word == "--" && i < cursor {
 			options = false
 			continue
 		}
-		if options && len(positional) == 0 && name != "" {
+		if options && len(positional) == 0 && (name != "" || i == cursor && strings.HasPrefix(word, "-")) {
 			if i == cursor && !equals {
-				flags := []string{"C", "tags", "list", "cmd", "format", "format-fields", "completion", "completion-target", "help"}
+				var flags []string
+				if !installing {
+					flags = append(flags, "C", "tags", "list", "cmd", "format", "format-fields", "completion")
+				}
+				flags = append(flags, "completion-target")
+				if !searching {
+					flags = append(flags, "completion-file")
+					if !installSet {
+						flags = append(flags, "install-completion")
+					}
+					flags = append(flags, "yes")
+				}
+				flags = append(flags, "help")
 				prefix := "-"
 				if strings.HasPrefix(word, "--") {
 					prefix = "--"
@@ -229,7 +242,22 @@ func gopickCompletionRequest(words []string, cursor int) completionRequest {
 				return r
 			}
 			switch name {
-			case "C", "tags", "format", "completion", "completion-target", "complete", "cursor":
+			case "install-completion", "completion-file", "yes":
+				if searching {
+					return completionRequest{kind: "none"}
+				}
+				installing = true
+				installSet = installSet || name == "install-completion"
+			case "completion-target":
+				// Shared by script output and installation.
+			default:
+				if installing {
+					return completionRequest{kind: "none"}
+				}
+				searching = true
+			}
+			switch name {
+			case "C", "tags", "format", "completion", "completion-target", "completion-file", "install-completion", "complete", "cursor":
 				if !equals {
 					i++
 					value = words[i]
@@ -240,8 +268,10 @@ func gopickCompletionRequest(words []string, cursor int) completionRequest {
 						r.prepend = word[:len(word)-len(value)]
 					}
 					switch name {
-					case "completion":
+					case "completion", "install-completion":
 						r.values = []string{"zsh", "bash", "fish"}
+					case "completion-file":
+						r.kind = "files"
 					case "completion-target":
 						r.values = []string{"go", "gopick", "both"}
 					case "format":
@@ -258,11 +288,20 @@ func gopickCompletionRequest(words []string, cursor int) completionRequest {
 				case "tags":
 					r.tags = &value
 				}
-			case "list", "cmd", "format-fields":
+			case "list", "cmd", "format-fields", "yes":
+				if i == cursor && equals {
+					r.prefix = value
+					r.prepend = word[:len(word)-len(value)]
+					r.values = []string{"true", "false"}
+					return r
+				}
 			default:
 				return completionRequest{kind: "none"}
 			}
 			continue
+		}
+		if installing {
+			return completionRequest{kind: "none"}
 		}
 		if i < cursor {
 			positional = append(positional, word)

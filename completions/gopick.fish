@@ -38,6 +38,17 @@ function __gopick_command_context
     test "$__gopick_result[1]" != fallback
 end
 
+function __gopick_option_context
+    __gopick_command_context; or return 1
+    set -l current (commandline -ct)
+    # The backend supplies valid flag names. These rules only describe values.
+    # Sharing one condition also lets Fish cache it across all option rules.
+    if test "$__gopick_result[1]" = arguments; and string match -q -- '-*' "$current"; and not string match -q -- '*=*' "$current"
+        return 1
+    end
+    return 0
+end
+
 function __gopick_candidates
     set -l current (commandline -ct)
     # The condition has already queried discovery for this completion cycle.
@@ -54,26 +65,31 @@ function __gopick_candidates
     end
 end
 
-# Conditions allow re-sourcing with another selection without deleting any
-# completions installed by Fish or other tools. Register each rule only once;
-# function definitions and the target selection are refreshed on every source.
+# Conditions allow re-sourcing with another selection.
 if not string match -q '*__gopick_go_context*' -- (complete -c go)
     for option in run test.run
         complete -c go -n __gopick_go_context -o $option -l $option -x -a '(__gopick_candidates)'
     end
 end
 
-if not string match -q '*__gopick_command_context*' -- (complete -c gopick)
-    for option in C tags format completion completion-target
-        complete -c gopick -n __gopick_command_context -o $option -l $option -x -a '(__gopick_candidates)'
-    end
-    for option in list cmd format-fields help
-        complete -c gopick -n __gopick_command_context -o $option -l $option
+# Refresh our rules when upgrading, preserving every unrelated registration.
+# Fish's erase operation cannot select a rule by condition. Reapply the shell's
+# own serialized definitions for other providers, never command-line input.
+set -l previous (complete -c gopick)
+if string match -qr '__gopick_(command|option)_context' -- $previous
+    complete -e -c gopick
+    for rule in $previous
+        if not string match -qr '__gopick_(command|option)_context' -- "$rule"
+            eval "$rule"
+        end
     end
 end
-
-# Keep package scopes ahead of test names, including when re-sourcing over an
-# older registration. Fish removes duplicate candidates from the older rule.
-if not string match -q '* -k *__gopick_command_context*' -- (complete -c gopick)
-    complete -c gopick -n __gopick_command_context -k -f -a '(__gopick_candidates)'
+for option in C tags format completion completion-target install-completion
+    complete -c gopick -n __gopick_option_context -o $option -l $option -x -a '(__gopick_candidates)'
 end
+complete -c gopick -n __gopick_option_context -o completion-file -l completion-file -r -F
+for option in list cmd format-fields yes
+    complete -c gopick -n __gopick_option_context -o $option -l $option -a '(__gopick_candidates)'
+end
+complete -c gopick -n __gopick_option_context -o help -l help
+complete -c gopick -n __gopick_command_context -k -f -a '(__gopick_candidates)'

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCompletionScripts(t *testing.T) {
@@ -53,6 +54,59 @@ func TestCompletionScripts(t *testing.T) {
 	}
 }
 
+func TestZshCompletionInitialization(t *testing.T) {
+	zsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip(err)
+	}
+	home := completionHome(t)
+	var script bytes.Buffer
+	if err := printCompletionScript(&script, "zsh", "both"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "completion.zsh")
+	if err := os.WriteFile(path, script.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate initialization failing or being declined, without changing the
+	// system completion directories or disabling compinit's normal checks.
+	if err := os.WriteFile(filepath.Join(home, "compinit"), []byte("return 42\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ name, setup, check string }{
+		{"fresh", "", `
+source "$1" || exit 1
+(( $+functions[compdef] )) || exit 2
+[[ ${_comps[gopick]} == _gopick && ${_patcomps[go]} == _gopick_go ]] || exit 3
+compinit() { print -u2 'unexpected reinitialization'; return 1; }
+source "$1" || exit 4
+[[ ${_comps[gopick]} == _gopick && ${_patcomps[go]} == _gopick_go ]]
+`},
+		{"initialized", `
+autoload -Uz compinit && compinit || exit 1
+compdef _existing_go go
+compinit() { print -u2 'unexpected reinitialization'; return 1; }
+`, `
+source "$1" || exit 2
+[[ ${_comps[go]} == _existing_go && ${_comps[gopick]} == _gopick && ${_patcomps[go]} == _gopick_go ]]
+`},
+		{"failed", `fpath=("$HOME")`, `
+source "$1"
+[[ $? == 42 ]] || exit 1
+(( ! $+functions[compdef] && ! $+functions[_gopick] ))
+`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, zsh, "-df", "-c", tc.setup+"\n"+tc.check, "zsh", path)
+			if output, err := cmd.CombinedOutput(); err != nil || len(output) != 0 {
+				t.Fatalf("Zsh initialization: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
 func TestShellCompletion(t *testing.T) {
 	dir := fixture(t, map[string]string{
 		"example.go":      "package example\nvar broken = undefined\n",
@@ -87,7 +141,33 @@ func TestShellCompletion(t *testing.T) {
 		{[]string{"gopick", "-completion", "b"}, 2, "arguments\nbash\n"},
 		{[]string{"gopick", "-completion-target", "go"}, 2, "arguments\ngo\ngopick\n"},
 		{[]string{"gopick", "--completion-target=b"}, 1, "arguments\n--completion-target=both\n"},
-		{[]string{"gopick", "--comp"}, 1, "arguments\n--completion\n--completion-target\n"},
+		{[]string{"gopick", "--comp"}, 1, "arguments\n--completion\n--completion-target\n--completion-file\n"},
+		{[]string{"gopick", "-install-completion", "f"}, 2, "arguments\nfish\n"},
+		{[]string{"gopick", "--install-completion=z"}, 1, "arguments\n--install-completion=zsh\n"},
+		{[]string{"gopick", "-install-completion", "zsh", ""}, 3, "none\n"},
+		{[]string{"gopick", "-completion-file", ""}, 2, "files\n"},
+		{[]string{"gopick", "--completion-file="}, 1, "files\n"},
+		{[]string{"gopick", "-install-completion", "zsh", "-"}, 3, "arguments\n-completion-target\n-completion-file\n-yes\n-help\n"},
+		{[]string{"gopick", "--install-completion=zsh", "--"}, 2, "arguments\n--completion-target\n--completion-file\n--yes\n--help\n"},
+		{[]string{"gopick", "--yes", "--"}, 2, "arguments\n--completion-target\n--completion-file\n--install-completion\n--yes\n--help\n"},
+		{[]string{"gopick", "--yes=false", ""}, 2, "none\n"},
+		{[]string{"gopick", "--completion-file", "config", "--"}, 3, "arguments\n--completion-target\n--completion-file\n--install-completion\n--yes\n--help\n"},
+		{[]string{"gopick", "--completion-file=config", ""}, 2, "none\n"},
+		{[]string{"gopick", "--yes", "--install-completion", "z"}, 3, "arguments\nzsh\n"},
+		{[]string{"gopick", "--list", "--"}, 2, "arguments\n--C\n--tags\n--list\n--cmd\n--format\n--format-fields\n--completion\n--completion-target\n--help\n"},
+		{[]string{"gopick", "-C", dir, "--inst"}, 3, "arguments\n"},
+		{[]string{"gopick", "-tags=special", "--yes"}, 2, "arguments\n"},
+		{[]string{"gopick", "-completion", "bash", "--completion-fi"}, 3, "arguments\n"},
+		{[]string{"gopick", "--completion-target=go", "--inst"}, 2, "arguments\n--install-completion\n"},
+		{[]string{"gopick", "--yes", "--list=false"}, 2, "none\n"},
+		{[]string{"gopick", "--list", "--completion-file="}, 2, "none\n"},
+		{[]string{"gopick", "-install-completion", "zsh", "extra", "-r"}, 4, "none\n"},
+		{[]string{"gopick", "-yes", "extra", "-r"}, 3, "none\n"},
+		{[]string{"gopick", "-completion-file=config", "extra", "-r"}, 3, "none\n"},
+		{[]string{"gopick", "-yes="}, 1, "arguments\n-yes=true\n-yes=false\n"},
+		{[]string{"gopick", "-list=f"}, 1, "arguments\n-list=false\n"},
+		{[]string{"gopick", "--cmd=t"}, 1, "arguments\n--cmd=true\n"},
+		{[]string{"gopick", "-format-fields=invalid"}, 1, "arguments\n"},
 		{[]string{"gopick", "-format-"}, 1, "arguments\n-format-fields\n"},
 		{[]string{"gopick", "--format-"}, 1, "arguments\n--format-fields\n"},
 		{[]string{"gopick", "Test", "-r"}, 2, "fallback\n"},
@@ -205,7 +285,7 @@ PS1='GOPICK_READY> '
 				t.Fatal(err)
 			}
 			cmd := exec.Command(python, append([]string{"-c", `
-import os, pathlib, pty, select, signal, subprocess, sys, time
+import os, pathlib, pty, select, shlex, signal, subprocess, sys, time
 shell, root, rc = sys.argv[1:4]
 want = sys.argv[4:]
 capture = pathlib.Path(rc).parent / 'captured'
@@ -240,6 +320,25 @@ try:
         actual = capture.read_bytes().decode().split('\0')[:-1]
         if actual != [expected]:
             raise AssertionError(f'candidate {i}: got {actual!r}, want {expected!r}')
+    if pathlib.Path(shell).name == 'zsh':
+        # Exercise real _arguments exclusions, not a stub of its parser.
+        for line, expected in [
+            ('gopick -install-completion zsh --li', '-install-completion zsh --li'),
+            ('gopick --install-completion=zsh --tag', '--install-completion=zsh --tag'),
+            ('gopick --completion-file config --cm', '--completion-file config --cm'),
+            ('gopick --yes --format-f', '--yes --format-f'),
+            ('gopick --list --inst', '--list --inst'),
+            ('gopick --list --ye', '--list --ye'),
+            ('gopick --completion zsh --completion-fi', '--completion zsh --completion-fi'),
+            ('gopick -install-completion zsh --ye', '-install-completion zsh --yes'),
+            ('gopick --yes --install-completion zs', '--yes --install-completion zsh'),
+        ]:
+            capture.unlink(missing_ok=True)
+            os.write(master, (line + '\t\r').encode())
+            until(lambda output: capture.exists() and b'GOPICK_READY>' in output)
+            actual = capture.read_bytes().decode().split('\0')[:-1]
+            if actual != shlex.split(expected):
+                raise AssertionError(f'{line}: got {actual!r}, want {expected!r}')
 finally:
     os.kill(child, signal.SIGKILL)
     # Closing the PTY releases a shell that may still be flushing terminal I/O.
@@ -294,6 +393,10 @@ func TestBashCompletion(t *testing.T) {
 		{"gopick TestAl", "gopick TestAl", "_gopick", "TestAlpha\nTestAlphaError\n"},
 		{"gopick ./sub '^TestS'", "gopick ./sub ^TestS", "_gopick", "^TestSub\n"},
 		{"gopick -completion-target = go", "gopick -completion-target=go", "_gopick", "go\ngopick\n"},
+		{"gopick --yes --", "gopick --yes --", "_gopick", "--completion-target\n--completion-file\n--install-completion\n--yes\n--help\n"},
+		{"gopick --completion-file config --li", "gopick --completion-file config --li", "_gopick", ""},
+		{"gopick --yes ''", "gopick --yes ", "_gopick", ""},
+		{"gopick --list --inst", "gopick --list --inst", "_gopick", ""},
 		{"go -C " + shellCommand([]string{homePath}) + " test -run=TestAl", "go -C " + homePath + " test -run=TestAl", "_gopick_go", "^TestAlpha$\n^TestAlphaError$\n"},
 		{"go -C " + shellCommand([]string{shellCommand([]string{homePath})}) + " test -run=TestAl", "go -C " + shellCommand([]string{homePath}) + " test -run=TestAl", "_gopick_go", ""},
 		{`go -C '~+' test -run=TestAl`, "go -C ~+ test -run=TestAl", "_gopick_go", "^TestAlpha$\n^TestAlphaError$\n"},
@@ -334,14 +437,25 @@ func TestBashPaths(t *testing.T) {
 		"project:colon/main_test.go":   "package example\nimport \"testing\"\nfunc TestColon(t *testing.T) {}\n",
 		"project::double/go.mod":       "module example.com/double\n\ngo 1.26\n",
 		"project::double/main_test.go": "package example\nimport \"testing\"\nfunc TestDouble(t *testing.T) {}\n",
+		"home space/configrc":          "",
+		"home space/settings file":     "",
+		"~/literalrc":                  "",
 	})
 	for _, name := range []string{"space dir", "apostrophe's dir", "back\\slash", "dollar$(printf injected)", "colon:space dir"} {
 		if err := os.Mkdir(filepath.Join(dir, name), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	for _, name := range []string{"configrc", "settings file", "quote'config", "path:config"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	rc := filepath.Join(dir, "bashrc")
-	if err := os.WriteFile(rc, []byte(bashCompletion+`
+	if err := os.WriteFile(rc, []byte(`
+_previous_gopick() { COMPREPLY=(wrong); }
+complete -F _previous_gopick gopick
+`+bashCompletion+`
 gopick() {
   if [[ $1 == -complete ]]; then
     command gopick "$@" 2> "$GOPICK_CAPTURE.error"
@@ -371,7 +485,7 @@ bind '"\t": complete'
 		seen[bash] = true
 		t.Run(name, func(t *testing.T) {
 			cmd := exec.Command(python, "-c", `
-import os, pathlib, pty, select, subprocess, sys, time
+import os, pathlib, pty, select, shlex, subprocess, sys, time
 bash, root, rc = sys.argv[1:]
 capture = pathlib.Path(root) / 'captured'
 master, slave = pty.openpty()
@@ -429,6 +543,30 @@ try:
             if actual[-1] != '-run=^' + test + '$':
                 error = pathlib.Path(str(capture) + '.error').read_text()
                 raise AssertionError(f'{flag}{path}: got {actual!r}; {error}')
+    home = pathlib.Path(root) / 'home space'
+    os.write(master, ('export HOME=' + shlex.quote(str(home)) + '\r').encode())
+    until(lambda output: b'GOPICK_READY>' in output)
+    for prefix, expected in [
+        ('./con', './configrc'),
+        ('./set', './settings file'),
+        ("'./set", './settings file'),
+        ('./quo', "./quote'config"),
+        ('./path:co', './path:config'),
+        ('./colon:spa', './colon:space dir/'),
+        ('~/con', str(home / 'configrc')),
+        ('~/set', str(home / 'settings file')),
+        ("'~/lit", './~/literalrc'),
+        ('"~/lit', './~/literalrc'),
+        ('\\~/lit', './~/literalrc'),
+    ]:
+        for flag in ['-completion-file ', '--completion-file=']:
+            capture.unlink(missing_ok=True)
+            os.write(master, ('gopick ' + flag + prefix + '\t\r').encode())
+            until(lambda output: capture.exists() and b'GOPICK_READY>' in output)
+            actual = capture.read_bytes().decode().split('\0')[:-1]
+            want = ['-completion-file', expected] if flag.endswith(' ') else ['--completion-file=' + expected]
+            if actual != want:
+                raise AssertionError(f'{flag}{prefix}: got {actual!r}, want {want!r}')
 finally:
     child.terminate()
     try:
@@ -452,6 +590,7 @@ func TestCompletionSelection(t *testing.T) {
 			t.Skip(shell + " is not installed")
 		}
 		t.Run(shell, func(t *testing.T) {
+			completionHome(t)
 			var script strings.Builder
 			check := "complete -p go gopick\n"
 			if shell == "zsh" {
@@ -492,6 +631,7 @@ func TestFishCompletion(t *testing.T) {
 		"sub/sub_test.go": "package sub\nimport \"testing\"\nfunc TestSub(t *testing.T) {}\n",
 		"tagged_test.go":  "//go:build special\n\npackage example\nimport \"testing\"\nfunc TestTagged(t *testing.T) {}\n",
 		"~/literal/keep":  "",
+		"settings":        "",
 	})
 	completionExecutable(t)
 	home, err := os.UserHomeDir()
@@ -518,6 +658,15 @@ func TestFishCompletion(t *testing.T) {
 		{"gopick ./sub Test", "TestSub\n"},
 		{"gopick -completion-target go", "go\ngopick\n"},
 		{"gopick -completion-target=b", "-completion-target=both\n"},
+		{"gopick --completion-file=set", "--completion-file=settings\n"},
+		{"gopick -completion-file set", "settings\n"},
+		{"gopick -install-completion fish --", "--completion-target\n--completion-file\n--yes\n--help\n"},
+		{"gopick --yes --", "--completion-target\n--completion-file\n--install-completion\n--yes\n--help\n"},
+		{"gopick --completion-file config --list", ""},
+		{"gopick --yes ", ""},
+		{"gopick --list --install-", ""},
+		{"gopick --completion fish --yes", ""},
+		{"gopick -yes=", "-yes=false\n-yes=true\n"},
 		{"gopick TestAlpha -comp", ""},
 		{"gopick -C " + homePath + "/s", homePath + "/sub/\n"},
 		{"gopick -C " + homePath + "/'s", homePath + "/sub/\n"},
@@ -559,6 +708,25 @@ test (count $before) -eq (count (complete -c go)); or exit 1
 		want := goNames + "existing\n" + goNames + gopickNames + "existing\n" + gopickNames + "existing\n" + goNames + gopickNames + "existing\n" + goNames + "existing\n"
 		if string(output) != want {
 			t.Errorf("completion=%q, want %q", output, want)
+		}
+	})
+	t.Run("upgrade registrations", func(t *testing.T) {
+		cmd := exec.Command(fish, "--no-config", "-c", `
+complete -c gopick -n __gopick_command_context -o list
+complete -c gopick -n __gopick_command_context -f -a '(__gopick_candidates)'
+complete -c gopick -l custom
+gopick -completion fish | source
+set before (complete -c gopick)
+gopick -completion fish | source
+test (count $before) -eq (count (complete -c gopick)); or exit 1
+complete -C 'gopick --install-'
+complete -C 'gopick --completion-file=set'
+complete -C 'gopick --custom'
+`)
+		cmd.Dir = dir
+		want := "--install-completion\n--completion-file=settings\n--custom\n"
+		if output, err := cmd.CombinedOutput(); err != nil || string(output) != want {
+			t.Fatalf("upgrading Fish registrations: %v\n%s", err, output)
 		}
 	})
 }
