@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -36,6 +37,17 @@ func fixture(t *testing.T, files map[string]string) string {
 		}
 	}
 	return dir
+}
+
+// Keep shell source out of the Windows command line: Git Bash's argument
+// decoding differs from Go's escaping, and large scripts exceed its size limit.
+func shellScript(t *testing.T, script string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "script")
+	if err := os.WriteFile(path, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.ToSlash(path)
 }
 
 func TestDiscover(t *testing.T) {
@@ -669,7 +681,7 @@ func TestFileScopes(t *testing.T) {
 			cmd = exec.Command(entry.Command[0], entry.Command[1:]...)
 			cmd.Dir = entry.Dir
 		default:
-			cmd = exec.Command("sh", "-c", stdout.String())
+			cmd = exec.Command("sh", shellScript(t, stdout.String()))
 			cmd.Dir = t.TempDir()
 		}
 		if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "file scope ran") {
@@ -713,7 +725,7 @@ func TestLocalPackages(t *testing.T) {
 	if !strings.Contains(stdout.String(), "test . ./sub -run Local") {
 		t.Errorf("command = %q; want both local package paths", &stdout)
 	}
-	cmd := exec.Command("sh", "-c", stdout.String())
+	cmd := exec.Command("sh", shellScript(t, stdout.String()))
 	cmd.Dir = t.TempDir()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("copied command: %v\n%s", err, output)
@@ -743,7 +755,7 @@ func TestShellCommand(t *testing.T) {
 			}
 			args := []string{"", "space dir", "quote'd", `one\slash`, `two\\slashes`, "trailing\\", "slash\\'quote", "$HOME", "$(printf injected)", "`printf injected`", "line\nbreak"}
 			command := shellCommand(append([]string{"printf", "%s\\000"}, args...))
-			output, err := exec.Command(path, "-c", command).CombinedOutput()
+			output, err := exec.Command(path, shellScript(t, command)).CombinedOutput()
 			if err != nil {
 				t.Fatalf("shell command: %v\n%s", err, output)
 			}
@@ -771,7 +783,12 @@ func TestShell(t *testing.T) {
 }
 `,
 	})
-	project := filepath.Join(t.TempDir(), "project with 'quotes' and \\\\slashes")
+	name := "project with 'quotes'"
+	if runtime.GOOS != "windows" {
+		// A literal backslash is a filename character only on Unix.
+		name += " and \\\\slashes"
+	}
+	project := filepath.Join(t.TempDir(), name)
 	if err := os.Rename(dir, project); err != nil {
 		t.Fatal(err)
 	}
@@ -788,7 +805,7 @@ func TestShell(t *testing.T) {
 				if err := run(context.Background(), args, nil, &stdout, &stderr); err != nil {
 					t.Fatal(err)
 				}
-				cmd := exec.Command(path, "-c", stdout.String())
+				cmd := exec.Command(path, shellScript(t, stdout.String()))
 				cmd.Dir = t.TempDir()
 				if output, err := cmd.CombinedOutput(); err != nil || !strings.Contains(string(output), "copied command ran") {
 					t.Fatalf("copied command %q: %v\n%s", &stdout, err, output)
@@ -1002,7 +1019,7 @@ func TestWorkingDirectory(t *testing.T) {
 		if err := run(context.Background(), []string{"-C", dir, "-cmd", "^TestChosen$"}, nil, &stdout, &stderr); err != nil {
 			t.Fatal(err)
 		}
-		cmd := exec.Command("sh", "-c", stdout.String())
+		cmd := exec.Command("sh", shellScript(t, stdout.String()))
 		cmd.Dir = t.TempDir()
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("copied command failed: %v\n%s", err, output)

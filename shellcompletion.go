@@ -339,7 +339,8 @@ func completionDirectories(prefix string) []string {
 	for _, entry := range entries {
 		info, err := os.Stat(filepath.Join(readDir, entry.Name()))
 		if err == nil && info.IsDir() && strings.HasPrefix(entry.Name(), base) {
-			values = append(values, dir+entry.Name()+string(filepath.Separator))
+			// Candidates are inserted into POSIX shells, including Git Bash.
+			values = append(values, dir+entry.Name()+"/")
 		}
 	}
 	return values

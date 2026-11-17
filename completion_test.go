@@ -89,7 +89,7 @@ func TestZshCompletion(t *testing.T) {
 		{"anchored name", "'^TestAl'", "^TestAl", "-complete\ntests\n-C\n/tmp/project space\n-tags\nspecial\n--\n"},
 		{"extra argument", "./sub TestAlpha extra", "extra", ""},
 	} {
-		cmd = exec.Command(zsh, "-f", "-c", `
+		cmd = exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 words=(gopick --C "'/tmp/project space'" --tags special `+tc.line+`)
@@ -105,7 +105,7 @@ compset() { PREFIX=${PREFIX#\^}; }
 gopick() { print -rl -- "$@"; }
 compadd() { print -rl -- "${candidates[@]}"; }
 _gopick
-`)
+`))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("completion failed: %v\n%s", err, output)
@@ -156,14 +156,14 @@ func TestZshPaths(t *testing.T) {
 		if tc.magic {
 			option = "setopt"
 		}
-		cmd := exec.Command(zsh, "-f", "-c", `
+		cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 cd child
 `+option+` magicequalsubst
 _gopick_unquote `+shellCommand([]string{tc.word})+`
 print -r -- "$REPLY"
-`)
+`))
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()
 		if err != nil || string(output) != tc.want+"\n" {
@@ -178,7 +178,7 @@ func TestZshCompletionTags(t *testing.T) {
 		t.Skip("zsh is not installed")
 	}
 	for _, options := range []string{"", "-tags ''", `-tags "''"`, "--tags ''", `--tags "''"`} {
-		cmd := exec.Command(zsh, "-f", "-c", `
+		cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 _arguments() {
@@ -190,7 +190,7 @@ _arguments() {
 gopick() { print -rl -- "$@"; }
 compadd() { print -rl -- "${candidates[@]}"; }
 _gopick
-`)
+`))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("completion failed: %v\n%s", err, output)
@@ -231,7 +231,7 @@ func TestZshForwardedCompletion(t *testing.T) {
 		{"gopick -yes extra -r", ""},
 		{"gopick --yes=false extra -r", ""},
 	} {
-		cmd := exec.Command(zsh, "-f", "-c", `
+		cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 words=(`+tc.words+`)
@@ -239,7 +239,7 @@ CURRENT=${#words}
 _normal() { print -r -- "$CURRENT"; print -rl -- "${words[@]}"; }
 _arguments() { print 'unexpected gopick completion'; }
 _gopick
-`)
+`))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("completion failed: %v\n%s", err, output)
@@ -263,7 +263,7 @@ func TestZshDelegatedContext(t *testing.T) {
 		"sub/hidden_test.go": "//go:build special\n\npackage sub\nimport \"testing\"\nfunc TestInScope(t *testing.T) {}\n",
 	})
 	completionExecutable(t)
-	cmd := exec.Command(zsh, "-f", "-c", `
+	cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 words=(`+shellCommand([]string{"gopick", "-C", project, "-tags", "special", "./sub", "Test", "-run=Test"})+`)
@@ -276,7 +276,7 @@ compadd() {
   if [[ $1 == -O ]]; then matched=("${candidates[@]}"); else print -rl -- "${anchored[@]}"; fi
 }
 _gopick
-`)
+`))
 	cmd.Dir = wrong
 	output, err := cmd.CombinedOutput()
 	if err != nil || string(output) != "^TestInScope$\n" {
@@ -388,7 +388,7 @@ func TestZshGoCompletion(t *testing.T) {
 		{"test arguments", []string{"go", "test", "-args", "-run=Test"}, 4, "-run=Test", "skip:\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := exec.Command(zsh, "-f", "-c", `
+			cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 words=(`+shellCommand(tc.words)+`)
@@ -401,7 +401,7 @@ compadd() {
 }
 _gopick_go
 print -r -- "skip:$_compskip"
-`)
+`))
 			cmd.Dir = dir
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -415,7 +415,7 @@ print -r -- "skip:$_compskip"
 
 	t.Run("quoted caret retains regexp meaning", func(t *testing.T) {
 		for _, prefix := range []string{"-run=^TestAl", `-run=\^TestAl`} {
-			cmd := exec.Command(zsh, "-f", "-c", `
+			cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 words=(go test "-run='^TestAl")
@@ -433,7 +433,7 @@ compadd() {
   if [[ $1 == -O ]]; then matched=("${candidates[@]}"); else print -r -- "$IPREFIX${anchored[1]}"; fi
 }
 _gopick_go
-`)
+`))
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("completion failed: %v\n%s", err, output)
@@ -454,7 +454,7 @@ _gopick_go
 			{"unambiguous", "TestAlpha TestAlphaError", "insert: list:list\n^TestAlpha$\n^TestAlphaError$\n"},
 			{"menu", "TestAlpha TestAlphaError", "insert:menu list:\n^TestAlpha$\n^TestAlphaError$\n"},
 		} {
-			cmd := exec.Command(zsh, "-f", "-c", `
+			cmd := exec.Command(zsh, "-f", shellScript(t, `
 compdef() { :; }
 `+zshCompletion+`
 words=(go test -run=TestAl)
@@ -476,7 +476,7 @@ compadd() {
 _gopick_go
 print -r -- "insert:$compstate[insert] list:$compstate[list]"
 print -rl -- "${selected[@]}"
-`)
+`))
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("completion failed: %v\n%s", err, output)
@@ -489,7 +489,7 @@ print -rl -- "${selected[@]}"
 
 	t.Run("preserve existing completion on reload", func(t *testing.T) {
 		completionHome(t)
-		cmd := exec.Command(zsh, "-f", "-c", `
+		cmd := exec.Command(zsh, "-f", shellScript(t, `
 autoload -Uz compinit
 compinit -D -i
 _existing_go() { print existing; }
@@ -500,7 +500,7 @@ words=(go build '')
 CURRENT=3
 PREFIX=''
 _dispatch command go
-`)
+`))
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("registration failed: %v\n%s", err, output)

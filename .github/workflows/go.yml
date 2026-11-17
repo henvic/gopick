@@ -16,18 +16,15 @@ jobs:
         go: [1.27.x]
     runs-on: ${{ matrix.os }}
     name: Test
-    # The interactive explorer is Unix-only; Windows exercises the fallback
-    # build and the portable scanner, so treat its result as advisory.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     steps:
+
+    - name: Check out code
+      uses: actions/checkout@v7
 
     - name: Set up Go ${{ matrix.go }}
       uses: actions/setup-go@v7
       with:
         go-version: ${{ matrix.go }}
-
-    - name: Check out code
-      uses: actions/checkout@v7
 
     - name: Test
       # bash on every OS: Windows' default PowerShell splits

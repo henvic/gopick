@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +15,7 @@ import (
 func completionHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	t.Setenv("HOME", filepath.ToSlash(home))
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("ZDOTDIR", "")
 	if err := os.Unsetenv("ZDOTDIR"); err != nil {
@@ -73,13 +74,17 @@ func TestInstallZsh(t *testing.T) {
 	if err := os.Chmod(rc, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	beforeInfo, err := os.Stat(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
 	installForTest(t, append(args, "-completion-target", "go")...)
 	after := readInstalled(t, rc)
 	if strings.Count(after, completionStart) != 1 || !strings.HasPrefix(after, "# user settings\n") || !strings.HasSuffix(after, "# after gopick\n") || !strings.Contains(after, "-completion-target go") {
 		t.Fatalf("target update lost settings or duplicated a block:\n%s", after)
 	}
 	info, err := os.Stat(rc)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || info.Mode().Perm() != beforeInfo.Mode().Perm() {
 		t.Fatalf("permissions changed: %v, %v", info, err)
 	}
 }
@@ -168,9 +173,9 @@ func TestInstallStartup(t *testing.T) {
 			}
 			completionHome(t)
 			installForTest(t, "-install-completion", shell, "-yes")
-			args := []string{"-d", "-i", "-c", `[[ ${_comps[gopick]} == _gopick && ${_patcomps[go]} == _gopick_go ]]`}
+			args := []string{"-d", "-i", shellScript(t, `[[ ${_comps[gopick]} == _gopick && ${_patcomps[go]} == _gopick_go ]]`)}
 			if shell == "bash" {
-				args = []string{"--noprofile", "-i", "-c", `complete -p go gopick`}
+				args = []string{"--noprofile", "-i", shellScript(t, `complete -p go gopick`)}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
@@ -189,11 +194,7 @@ func TestInstallBashProfile(t *testing.T) {
 	for _, profile := range []string{"", ". \"$HOME/.bashrc\"\n", "# independent login settings\n"} {
 		t.Run(profile, func(t *testing.T) {
 			home := completionHome(t)
-			completionExecutable(t)
-			binary, err := exec.LookPath("gopick")
-			if err != nil {
-				t.Fatal(err)
-			}
+			binary := completionExecutable(t)
 			wrapper := strings.Replace(readInstalled(t, binary), "#!/bin/sh\n", "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/calls\"\n", 1)
 			if err := os.WriteFile(binary, []byte(wrapper), 0o700); err != nil {
 				t.Fatal(err)
@@ -220,7 +221,7 @@ complete -p go gopick >/dev/null || exit 1
 			}
 			script += `. "$HOME/.bashrc"
 [[ $(wc -l < "$HOME/calls") -eq 2 ]]`
-			cmd := exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-i", "-c", script)
+			cmd := exec.CommandContext(ctx, bash, "--noprofile", "--norc", "-i", shellScript(t, script))
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("Bash profile: %v\n%s", err, output)
 			}
@@ -229,6 +230,9 @@ complete -p go gopick >/dev/null || exit 1
 }
 
 func TestInstallWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Unix file size limits and SIGXFSZ")
+	}
 	sh, err := exec.LookPath("sh")
 	if err != nil {
 		t.Skip(err)
@@ -242,7 +246,7 @@ func TestInstallWriteFailure(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, sh, "-c", "trap '' XFSZ; ulimit -f 1; exec gopick -install-completion zsh -yes")
+	cmd := exec.CommandContext(ctx, sh, shellScript(t, "trap '' XFSZ; ulimit -f 1 || exit 1; exec gopick -install-completion zsh -yes"))
 	if output, err := cmd.CombinedOutput(); err == nil || !bytes.Contains(output, []byte("install completion in")) {
 		t.Fatalf("expected installation failure: %v\n%s", err, output)
 	}
@@ -297,14 +301,15 @@ func TestInstallOverrideAndSymlink(t *testing.T) {
 		t.Fatal("ignored explicit startup file")
 	}
 	dangling := filepath.Join(home, "danglingrc")
-	if err := os.Symlink("missing/config", dangling); err != nil {
+	missing := filepath.Join("missing", "config")
+	if err := os.Symlink(missing, dangling); err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
 	if err := run(context.Background(), []string{"-install-completion", "zsh", "-completion-file", dangling, "-yes"}, nil, &output, &output); err == nil || !strings.Contains(err.Error(), "dangling symlink") {
 		t.Fatalf("expected a clear dangling symlink error: %v\n%s", err, &output)
 	}
-	if target, err := os.Readlink(dangling); err != nil || target != "missing/config" {
+	if target, err := os.Readlink(dangling); err != nil || target != missing {
 		t.Fatalf("dangling symlink changed: %q, %v", target, err)
 	}
 }
@@ -390,10 +395,7 @@ func TestInstallNonterminal(t *testing.T) {
 }
 
 func TestInstallConfirmation(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 required for pseudo-terminal test")
-	}
+	python := terminalPython(t)
 	completionHome(t)
 	completionExecutable(t)
 	for _, shell := range []string{"zsh", "bash", "fish"} {
@@ -522,9 +524,9 @@ func TestInstallFish(t *testing.T) {
 			}
 		}
 		for _, first := range []string{"go test -run=TestAl", "gopick TestAl"} {
-			cmd := exec.Command(fish, "--no-config", "-c", "set -p fish_complete_path "+shellCommand([]string{completionDir})+"\n"+
+			cmd := exec.Command(fish, "--no-config", shellScript(t, "set -p fish_complete_path "+shellCommand([]string{completionDir})+"\n"+
 				"complete -C "+shellCommand([]string{first})+" >/dev/null\n"+
-				"echo GO\ncomplete -C 'go test -run=TestAl'\necho GOPICK\ncomplete -C 'gopick TestAl'\necho NATIVE\ncomplete -C 'go buil'\n")
+				"echo GO\ncomplete -C 'go test -run=TestAl'\necho GOPICK\ncomplete -C 'gopick TestAl'\necho NATIVE\ncomplete -C 'go buil'\n"))
 			cmd.Dir = dir
 			output, err := cmd.CombinedOutput()
 			if err != nil {
@@ -541,7 +543,7 @@ func TestInstallFish(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(native, "go.fish"), []byte("complete -c go -f -a native\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(fish, "--no-config", "-c", "set fish_complete_path "+shellCommand([]string{completionDir, native})+" $fish_complete_path\ncomplete -C 'go nat'\n")
+	cmd := exec.Command(fish, "--no-config", shellScript(t, "set fish_complete_path "+shellCommand([]string{completionDir, native})+" $fish_complete_path\ncomplete -C 'go nat'\n"))
 	if output, err := cmd.CombinedOutput(); err != nil || string(output) != "native\n" {
 		t.Fatalf("lost next provider's completion: %v\n%s", err, output)
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -99,7 +100,7 @@ source "$1"
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, zsh, "-df", "-c", tc.setup+"\n"+tc.check, "zsh", path)
+			cmd := exec.CommandContext(ctx, zsh, "-df", shellScript(t, tc.setup+"\n"+tc.check), path)
 			if output, err := cmd.CombinedOutput(); err != nil || len(output) != 0 {
 				t.Fatalf("Zsh initialization: %v\n%s", err, output)
 			}
@@ -207,19 +208,33 @@ func TestCompletionHelper(t *testing.T) {
 	os.Exit(1)
 }
 
-func completionExecutable(t *testing.T) {
+func completionExecutable(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := "#!/bin/sh\nexec " + shellCommand([]string{executable, "-test.run=^TestCompletionHelper$", "--"}) + " \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "gopick"), []byte(script), 0o755); err != nil {
+	script := "#!/bin/sh\nexec " + shellCommand([]string{filepath.ToSlash(executable), "-test.run=^TestCompletionHelper$", "--"}) + " \"$@\"\n"
+	path := filepath.Join(dir, "gopick")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GOPICK_COMPLETION_HELPER", "1")
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return path
+}
+
+func terminalPython(t *testing.T) string {
+	t.Helper()
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is needed for the interactive PTY test")
+	}
+	if output, err := exec.Command(python, "-c", "import pty, termios").CombinedOutput(); err != nil {
+		t.Skipf("Python needs Unix PTY support: %v\n%s", err, output)
+	}
+	return python
 }
 
 func TestCompletionOrder(t *testing.T) {
@@ -242,7 +257,7 @@ func TestCompletionOrder(t *testing.T) {
 			t.Skip("fish is not installed")
 		}
 		for _, legacy := range []string{"", "complete -c gopick -n __gopick_command_context -f -a '(__gopick_candidates)'\n"} {
-			cmd := exec.Command(fish, "--no-config", "-c", legacy+fishCompletion+fishCompletion+"\ncomplete -C 'gopick '\n")
+			cmd := exec.Command(fish, "--no-config", shellScript(t, legacy+fishCompletion+fishCompletion+"\ncomplete -C 'gopick '\n"))
 			cmd.Dir = dir
 			output, err := cmd.CombinedOutput()
 			if expected := strings.Join(want, "\n") + "\n"; err != nil || string(output) != expected {
@@ -262,10 +277,7 @@ func TestCompletionOrder(t *testing.T) {
 		}
 		seen[path] = true
 		t.Run(name, func(t *testing.T) {
-			python, err := exec.LookPath("python3")
-			if err != nil {
-				t.Skip("python3 is needed for the interactive PTY test")
-			}
+			python := terminalPython(t)
 			rc := filepath.Join(t.TempDir(), ".zshrc")
 			script := bashCompletion + "\nbind '\"\\t\": menu-complete'\n"
 			if name == "zsh" {
@@ -361,11 +373,13 @@ func TestBashCompletion(t *testing.T) {
 		"example_test.go": "package example\nimport \"testing\"\nfunc TestAlpha(t *testing.T) { panic(\"must not run\") }\nfunc TestAlphaError(t *testing.T) {}\n",
 		"sub/sub_test.go": "package sub\nimport \"testing\"\nfunc TestSub(t *testing.T) {}\n",
 	})
+	dir = filepath.ToSlash(dir)
 	completionExecutable(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
 	}
+	home = filepath.ToSlash(home)
 	relative, err := filepath.Rel(home, dir)
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +421,7 @@ func TestBashCompletion(t *testing.T) {
 		{"go test -run = TestAl", "go test -run = TestAl", "_gopick_go", "existing\n"},
 		{"go -C . : test -run = TestAl", "go -C . : test -run=TestAl", "_gopick_go", "existing\n"},
 	} {
-		cmd := exec.Command(bash, "--noprofile", "--norc", "-c", `
+		cmd := exec.Command(bash, "--noprofile", "--norc", shellScript(t, `
 _existing_go() { COMPREPLY=(existing); }
 complete -o nospace -F _existing_go go
 `+bashCompletion+bashCompletion+`
@@ -417,7 +431,7 @@ COMP_WORDS=(`+tc.words+`)
 COMP_CWORD=$((${#COMP_WORDS[@]}-1))
 `+tc.function+` "${COMP_WORDS[0]}" "${COMP_WORDS[COMP_CWORD]}" "${COMP_WORDS[COMP_CWORD-1]}"
 for result in "${COMPREPLY[@]}"; do printf '%s\n' "$result"; done
-`)
+`))
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()
 		if err != nil || string(output) != tc.want {
@@ -427,10 +441,10 @@ for result in "${COMPREPLY[@]}"; do printf '%s\n' "$result"; done
 }
 
 func TestBashPaths(t *testing.T) {
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is needed for the interactive PTY test")
+	if runtime.GOOS == "windows" {
+		t.Skip("requires Unix filenames and terminal behavior")
 	}
+	python := terminalPython(t)
 	completionExecutable(t)
 	dir := fixture(t, map[string]string{
 		"project:colon/go.mod":         "module example.com/colon\n\ngo 1.26\n",
@@ -605,7 +619,7 @@ func TestCompletionSelection(t *testing.T) {
 				}
 				script.WriteString(check)
 			}
-			cmd := exec.Command(path, "-f", "-c", script.String())
+			cmd := exec.Command(path, "-f", shellScript(t, script.String()))
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("selection failed: %v\n%s", err, output)
@@ -676,7 +690,7 @@ func TestFishCompletion(t *testing.T) {
 		{"gopick -C=~/l", "-C=~/literal/\n"},
 		{"go -C " + homePath + " test -run=TestAl", "-run=^TestAlpha$\n-run=^TestAlphaError$\n"},
 	} {
-		cmd := exec.Command(fish, "--no-config", "-c", fishCompletion+"\ncomplete -C "+shellCommand([]string{tc.line})+"\n")
+		cmd := exec.Command(fish, "--no-config", shellScript(t, fishCompletion+"\ncomplete -C "+shellCommand([]string{tc.line})+"\n"))
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()
 		if err != nil || string(output) != tc.want {
@@ -684,7 +698,7 @@ func TestFishCompletion(t *testing.T) {
 		}
 	}
 	t.Run("selection and reload", func(t *testing.T) {
-		cmd := exec.Command(fish, "--no-config", "-c", `
+		cmd := exec.Command(fish, "--no-config", shellScript(t, `
 complete -C 'go ' >/dev/null
 complete -e -c go
 complete -c go -f -a existing
@@ -697,7 +711,7 @@ end
 set before (complete -c go)
 gopick -completion fish -completion-target go | source
 test (count $before) -eq (count (complete -c go)); or exit 1
-`)
+`))
 		cmd.Dir = dir
 		output, err := cmd.CombinedOutput()
 		if err != nil {
@@ -711,7 +725,7 @@ test (count $before) -eq (count (complete -c go)); or exit 1
 		}
 	})
 	t.Run("upgrade registrations", func(t *testing.T) {
-		cmd := exec.Command(fish, "--no-config", "-c", `
+		cmd := exec.Command(fish, "--no-config", shellScript(t, `
 complete -c gopick -n __gopick_command_context -o list
 complete -c gopick -n __gopick_command_context -f -a '(__gopick_candidates)'
 complete -c gopick -l custom
@@ -722,7 +736,7 @@ test (count $before) -eq (count (complete -c gopick)); or exit 1
 complete -C 'gopick --install-'
 complete -C 'gopick --completion-file=set'
 complete -C 'gopick --custom'
-`)
+`))
 		cmd.Dir = dir
 		want := "--install-completion\n--completion-file=settings\n--custom\n"
 		if output, err := cmd.CombinedOutput(); err != nil || string(output) != want {
