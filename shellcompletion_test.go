@@ -134,9 +134,11 @@ func TestShellCompletion(t *testing.T) {
 		{[]string{"go", "test", "-tags", "-run=Test"}, 3, "fallback\n"},
 		{[]string{"go", "build", "-run=Test"}, 2, "fallback\n"},
 		{[]string{"go", "test", "-r"}, 2, "fallback\n"},
-		{[]string{"gopick", "-C", dir, "TestA"}, 3, "arguments\nTestAlpha\n"},
-		{[]string{"gopick", "-C", dir, "./sub", "Test"}, 4, "tests\nTestSub\n"},
-		{[]string{"gopick", "-C", dir, "-tags", "special", "^TestT"}, 5, "tests\n^TestTagged\n"},
+		{[]string{"gopick", "-C", dir, "TestA"}, 3, "arguments\n^TestAlpha$\n"},
+		{[]string{"gopick", "-C", dir, "./sub", "Test"}, 4, "tests\n^TestSub$\n"},
+		{[]string{"gopick", "-C", dir, "-tags", "special", "^TestT"}, 5, "tests\n^TestTagged$\n"},
+		{[]string{"gopick", "-C", dir, "TestAlpha|TestZebra"}, 3, "arguments\n"},
+		{[]string{"gopick", "-C", dir, "^TestAlpha$/child"}, 3, "tests\n"},
 		{[]string{"gopick", "-C", dir, "TestAlpha", "extra"}, 4, "none\n"},
 		{[]string{"gopick", "-C", dir, "./sub", "TestAlpha", "extra"}, 5, "none\n"},
 		{[]string{"gopick", "-completion", "b"}, 2, "arguments\nbash\n"},
@@ -190,6 +192,46 @@ func TestShellCompletion(t *testing.T) {
 	}
 }
 
+func TestCompletedTest(t *testing.T) {
+	dir := fixture(t, map[string]string{
+		"example_test.go": `package example
+import "testing"
+func TestAlpha(t *testing.T) {
+    t.Run("child", func(t *testing.T) { t.Log("selected child ran") })
+}
+func TestAlphaError(t *testing.T) { t.Fatal("sibling ran") }
+`,
+	})
+	var candidates bytes.Buffer
+	words := []string{"gopick", "-C", dir, "TestAl"}
+	if err := completeShell(context.Background(), &candidates, words, len(words)-1); err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(candidates.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected two completion candidates, got %q", &candidates)
+	}
+	for _, tc := range []struct {
+		name       string
+		expression string
+		wantError  bool
+	}{
+		{"completed name", lines[1], false},
+		{"typed regexp", "TestAlpha", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(context.Background(), []string{"-C", dir, tc.expression, "-v", "-count=1"}, nil, &stdout, &stderr)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("run(%q) = %v; stdout=%s stderr=%s", tc.expression, err, &stdout, &stderr)
+			}
+			if !strings.Contains(stdout.String(), "selected child ran") || strings.Contains(stdout.String(), "sibling ran") != tc.wantError {
+				t.Fatalf("run(%q) selected the wrong tests: %s", tc.expression, &stdout)
+			}
+		})
+	}
+}
+
 // Exercise real shell adapters against the actual CLI without building another
 // executable. The subprocess exits before the testing package prints anything.
 func TestCompletionHelper(t *testing.T) {
@@ -239,10 +281,10 @@ func terminalPython(t *testing.T) string {
 
 func TestCompletionOrder(t *testing.T) {
 	dir := fixture(t, map[string]string{
-		"root_test.go":    "package example\nimport \"testing\"\nfunc TestAlpha(t *testing.T) {}\nfunc FuzzSample(f *testing.F) {}\nfunc Example() {\n// Output:\n}\n",
+		"root_test.go":    "package example\nimport \"testing\"\nfunc TestAlpha(t *testing.T) {}\nfunc TestAlphaError(t *testing.T) {}\nfunc FuzzSample(f *testing.F) {}\nfunc Example() {\n// Output:\n}\n",
 		"sub/sub_test.go": "package sub\nimport \"testing\"\nfunc TestSub(t *testing.T) {}\n",
 	})
-	want := []string{"./...", "example.com/project", "example.com/project/sub", "Example", "FuzzSample", "TestAlpha", "TestSub"}
+	want := []string{"./...", "example.com/project", "example.com/project/sub", "^Example$", "^FuzzSample$", "^TestAlpha$", "^TestAlphaError$", "^TestSub$"}
 	var output bytes.Buffer
 	if err := completeShell(context.Background(), &output, []string{"gopick", "-C", dir, ""}, 3); err != nil {
 		t.Fatal(err)
@@ -332,7 +374,31 @@ try:
         actual = capture.read_bytes().decode().split('\0')[:-1]
         if actual != [expected]:
             raise AssertionError(f'candidate {i}: got {actual!r}, want {expected!r}')
+    for line, expected in [
+        ('gopick TestAl', ['^TestAlpha$']),
+        ('gopick ^TestAl', ['^TestAlpha$']),
+        ("gopick '^TestAl'", ['^TestAlpha$']),
+        ('gopick ./sub TestS', ['./sub', '^TestSub$']),
+        ('gopick -list TestAl', ['-list', '^TestAlpha$']),
+        ("gopick 'TestAlpha|TestSub'", ['TestAlpha|TestSub']),
+        ("gopick '^TestAlpha$/child'", ['^TestAlpha$/child']),
+    ]:
+        capture.unlink(missing_ok=True)
+        os.write(master, (line + '\t\r').encode())
+        until(lambda output: capture.exists() and b'GOPICK_READY>' in output)
+        actual = capture.read_bytes().decode().split('\0')[:-1]
+        if actual != expected:
+            raise AssertionError(f'{line}: got {actual!r}, want {expected!r}')
     if pathlib.Path(shell).name == 'zsh':
+        # An ambiguous prefix must stay editable until a candidate is selected.
+        os.write(master, b"bindkey '^I' expand-or-complete\r")
+        until(lambda output: b'GOPICK_READY>' in output)
+        capture.unlink(missing_ok=True)
+        os.write(master, b'gopick TestAl\t\r')
+        until(lambda output: capture.exists() and b'GOPICK_READY>' in output)
+        actual = capture.read_bytes().decode().split('\0')[:-1]
+        if actual != ['TestAl']:
+            raise AssertionError(f'ambiguous prefix was changed: {actual!r}')
         # Exercise real _arguments exclusions, not a stub of its parser.
         for line, expected in [
             ('gopick -install-completion zsh --li', '-install-completion zsh --li'),
@@ -404,8 +470,10 @@ func TestBashCompletion(t *testing.T) {
 		{"go test -run Missing", "go test -run Missing", "_gopick_go", ""},
 		{"go build ''", "go build ", "_gopick_go", "existing\n"},
 		{"go test -args -run=Test", "go test -args -run=Test", "_gopick_go", "existing\n"},
-		{"gopick TestAl", "gopick TestAl", "_gopick", "TestAlpha\nTestAlphaError\n"},
-		{"gopick ./sub '^TestS'", "gopick ./sub ^TestS", "_gopick", "^TestSub\n"},
+		{"gopick TestAl", "gopick TestAl", "_gopick", "^TestAlpha$\n^TestAlphaError$\n"},
+		{"gopick '^TestAl'", "gopick ^TestAl", "_gopick", "^TestAlpha$\n^TestAlphaError$\n"},
+		{`gopick "'^TestAl"`, "gopick '^TestAl", "_gopick", "^TestAlpha$\n^TestAlphaError$\n"},
+		{"gopick ./sub '^TestS'", "gopick ./sub ^TestS", "_gopick", "^TestSub$\n"},
 		{"gopick -completion-target = go", "gopick -completion-target=go", "_gopick", "go\ngopick\n"},
 		{"gopick --yes --", "gopick --yes --", "_gopick", "--completion-target\n--completion-file\n--install-completion\n--yes\n--help\n"},
 		{"gopick --completion-file config --li", "gopick --completion-file config --li", "_gopick", ""},
@@ -668,8 +736,12 @@ func TestFishCompletion(t *testing.T) {
 		{"go test -tags=special -run=TestT", "-run=^TestTagged$\n"},
 		{"go test -run='^TestAl", "-run=^TestAlpha$\n-run=^TestAlphaError$\n"},
 		{"go test -run=Missing", ""},
-		{"gopick TestAl", "TestAlpha\nTestAlphaError\n"},
-		{"gopick ./sub Test", "TestSub\n"},
+		{"gopick TestAl", "^TestAlpha$\n^TestAlphaError$\n"},
+		{"gopick ^TestAl", "^TestAlpha$\n^TestAlphaError$\n"},
+		{"gopick '^TestAl", "^TestAlpha$\n^TestAlphaError$\n"},
+		{"gopick 'TestAlpha|TestSub'", ""},
+		{"gopick '^TestAlpha$/child'", ""},
+		{"gopick ./sub Test", "^TestSub$\n"},
 		{"gopick -completion-target go", "go\ngopick\n"},
 		{"gopick -completion-target=b", "-completion-target=both\n"},
 		{"gopick --completion-file=set", "--completion-file=settings\n"},
@@ -718,7 +790,7 @@ test (count $before) -eq (count (complete -c go)); or exit 1
 			t.Fatalf("selection failed: %v\n%s", err, output)
 		}
 		goNames := "-run=^TestAlpha$\n-run=^TestAlphaError$\n"
-		gopickNames := "TestAlpha\nTestAlphaError\n"
+		gopickNames := "^TestAlpha$\n^TestAlphaError$\n"
 		want := goNames + "existing\n" + goNames + gopickNames + "existing\n" + gopickNames + "existing\n" + goNames + gopickNames + "existing\n" + goNames + "existing\n"
 		if string(output) != want {
 			t.Errorf("completion=%q, want %q", output, want)

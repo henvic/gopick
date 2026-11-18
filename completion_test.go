@@ -103,7 +103,7 @@ _arguments() {
 
 compset() { PREFIX=${PREFIX#\^}; }
 gopick() { print -rl -- "$@"; }
-compadd() { print -rl -- "${candidates[@]}"; }
+_gopick_add() { print -rl -- "${candidates[@]}"; }
 _gopick
 `))
 		output, err := cmd.CombinedOutput()
@@ -188,7 +188,7 @@ _arguments() {
   PREFIX=Test
 }
 gopick() { print -rl -- "$@"; }
-compadd() { print -rl -- "${candidates[@]}"; }
+_gopick_add() { print -rl -- "${candidates[@]}"; }
 _gopick
 `))
 		output, err := cmd.CombinedOutput()

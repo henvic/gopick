@@ -321,8 +321,8 @@ func Example() {
 	}{
 		{[]string{"go", "-C", dir, "test", "-run=Fuzz"}, "exact\n-run=^FuzzExternal$\n-run=^FuzzInternal$\n"},
 		{[]string{"go", "-C", dir, "test", "-run=Example"}, "exact\n-run=^Example$\n-run=^Example_empty$\n-run=^Example_unordered$\n"},
-		{[]string{"gopick", "-C", dir, "Fuzz"}, "arguments\nFuzzExternal\nFuzzInternal\n"},
-		{[]string{"gopick", "-C", dir, "Example"}, "arguments\nExample\nExample_empty\nExample_unordered\n"},
+		{[]string{"gopick", "-C", dir, "Fuzz"}, "arguments\n^FuzzExternal$\n^FuzzInternal$\n"},
+		{[]string{"gopick", "-C", dir, "Example"}, "arguments\n^Example$\n^Example_empty$\n^Example_unordered$\n"},
 	} {
 		var stdout bytes.Buffer
 		if err := completeShell(context.Background(), &stdout, tc.words, len(tc.words)-1); err != nil {

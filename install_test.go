@@ -533,7 +533,7 @@ func TestInstallFish(t *testing.T) {
 				t.Fatalf("Fish loading failed: %v\n%s", err, output)
 			}
 			text := string(output)
-			if strings.Contains(text, "-run=^TestAlpha$") != (target != "gopick") || strings.Contains(text, "GOPICK\nTestAlpha\n") != (target != "go") || !strings.Contains(text, "NATIVE\nbuild\t") {
+			if strings.Contains(text, "-run=^TestAlpha$") != (target != "gopick") || strings.Contains(text, "GOPICK\n^TestAlpha$\n") != (target != "go") || !strings.Contains(text, "NATIVE\nbuild\t") {
 				t.Fatalf("target %s, first %s: missing completion or lost native Go completion:\n%s", target, first, text)
 			}
 		}

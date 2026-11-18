@@ -48,6 +48,7 @@ func completeShell(ctx context.Context, w io.Writer, words []string, cursor int)
 		return nil
 	}
 	values := request.values
+	names := make(map[string]bool)
 	if request.patterns != nil {
 		dir := request.dir
 		if dir == "" {
@@ -60,6 +61,9 @@ func completeShell(ctx context.Context, w io.Writer, words []string, cursor int)
 		tests, err := discover(ctx, absolute, request.patterns, request.tags, request.build...)
 		if err != nil {
 			return err
+		}
+		for _, test := range tests {
+			names[test.Name] = true
 		}
 		var output bytes.Buffer
 		candidateKind := "tests"
@@ -78,7 +82,7 @@ func completeShell(ctx context.Context, w io.Writer, words []string, cursor int)
 		if !strings.HasPrefix(value, request.prefix) {
 			continue
 		}
-		if kind == "exact" {
+		if names[value] {
 			value = "^" + value + "$"
 		}
 		if _, err := fmt.Fprintln(w, request.prepend+value); err != nil {
@@ -320,7 +324,7 @@ func gopickCompletionRequest(words []string, cursor int) completionRequest {
 		r.patterns = []string{"./..."}
 	}
 	if strings.HasPrefix(r.prefix, "^") {
-		r.kind, r.prepend, r.prefix = "tests", "^", strings.TrimPrefix(r.prefix, "^")
+		r.kind, r.prefix = "tests", strings.TrimPrefix(r.prefix, "^")
 	}
 	return r
 }

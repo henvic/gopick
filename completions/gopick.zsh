@@ -117,10 +117,13 @@ _gopick() {
         kind=tests
         scope=("${(Q)line[1]}" '')
       fi
-      # Complete an anchored name while preserving the typed ^.
+      # Match the name even if the user already typed or quoted its anchor.
+      if [[ $PREFIX == '\^'* ]]; then
+        PREFIX=${PREFIX#\\}
+      fi
       if [[ $PREFIX == \^* ]]; then
         kind=tests
-        compset -P '\^'
+        PREFIX=${PREFIX#\^}
       fi
       args=(-complete "$kind")
       if (( ${#directory} )); then
@@ -137,8 +140,7 @@ _gopick() {
       # prefixes instead of sending incomplete expressions to the backend.
       args+=(-- "${scope[@]}")
       candidates=("${(@f)$(gopick "${args[@]}" 2>/dev/null)}")
-      # Preserve the backend's package-first order within this group.
-      (( ${#candidates} )) && compadd -V gopick -a candidates
+      _gopick_add
       ;;
   esac
 }
@@ -146,8 +148,8 @@ _gopick() {
 # A pattern hook runs before the existing Go completer. Only claim -run
 # values; every other position keeps its existing completion behavior.
 _gopick_go() {
-  local word strip kind name REPLY
-  local -a query response candidates matched anchored
+  local word strip kind REPLY
+  local -a query response candidates
 
   # Only query the backend at -run values. It interprets flags, their values,
   # package arguments, and build settings for Zsh, Bash, and Fish alike.
@@ -190,14 +192,28 @@ _gopick_go() {
     word=${word#\^}
     candidates+=("${word%\$}")
   done
+  _gopick_add
+}
+
+# Match plain names, then insert exact test regexps while leaving packages alone.
+_gopick_add() {
+  local name
+  local -a matched anchored
+  integer exact=0
   compadd -O matched -M "$_matcher" -a candidates
   (( ${#matched} )) || return 1
   for name in "${matched[@]}"; do
-    anchored+=("^${name}$")
+    # Package candidates contain a dot or slash; test names are Go identifiers.
+    if [[ $name == *[./]* ]]; then
+      anchored+=("$name")
+    else
+      anchored+=("^${name}$")
+      exact=1
+    fi
   done
-  # Match plain names, then let zsh quote the entire exact regexp on insertion.
-  compadd -U -i "$IPREFIX" -d matched -a anchored
-  if (( compstate[nmatches] > 1 )) && [[ $compstate[insert] == *unambiguous* ]]; then
+  # Preserve package-first order and let Zsh quote the entire regexp.
+  compadd -U -V gopick -i "$IPREFIX" -d matched -a anchored
+  if (( exact && compstate[nmatches] > 1 )) && [[ $compstate[insert] == *unambiguous* ]]; then
     # Show choices without anchoring a shared prefix. Menu selection (or a
     # narrower prefix) inserts an actual candidate with both anchors.
     compstate[insert]=''

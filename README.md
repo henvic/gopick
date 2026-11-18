@@ -161,8 +161,9 @@ paths such as `./example` and import paths such as `github.com/henvic/gopick/exa
 The regexp matches test names using the same rules as `go test -run`.
 
 Press **Tab** after `gopick` to complete flags, packages, and test names.
-`gopick` completes names without adding regexp anchors. Use
-`gopick '^TestInternal$'` to run only that top-level test and its subtests.
+Selecting a test inserts an exact regexp such as `'^TestInternal$'`, running
+that top-level test and its subtests. Manually typed regexps keep their usual
+behavior: `gopick TestInternal` also matches names such as `TestInternalError`.
 
 ### Passing Go test flags
 
